@@ -87,6 +87,12 @@
             </li>
           </ul>
         </section>
+        <section class="mt-4 text-start" id="failed-section" aria-label="Failed downloads">
+          <h2 class="h5 text-white">Failed</h2>
+          <ul class="list-group list-group-flush bg-transparent" id="failed-list">
+            <li class="list-group-item bg-transparent text-white border-0 py-1" id="failed-empty">None</li>
+          </ul>
+        </section>
       </main>
       <footer class="mt-auto text-muted">
         <div id="liveAlertPlaceholder"></div>
@@ -128,6 +134,16 @@
         return url;
       }
 
+      function isYoutubeUrl(url) {
+        if (!url || typeof url !== 'string') return false;
+        try {
+          var parsed = new URL(url.trim());
+          var host = parsed.hostname.toLowerCase();
+          return (host.includes('youtube.com') && parsed.pathname.replace(/\/$/, '') === '/watch' && parsed.searchParams.get('v')) || (host.includes('youtu.be') && parsed.pathname.length > 1);
+        } catch (e) {}
+        return false;
+      }
+
       (function () {
         var form = document.querySelector('form[action="/youtube-dl/q"]');
         var urlInput = form && form.querySelector('input[name="url"]');
@@ -138,6 +154,7 @@
           setTimeout(function () {
             var normalized = normalizeYoutubeUrl(el.value);
             if (normalized !== el.value) el.value = normalized;
+            if (isYoutubeUrl(normalized)) form.submit();
           }, 0);
         });
 
@@ -252,6 +269,38 @@
           });
         }
 
+        var failedList = document.getElementById('failed-list');
+
+        function renderFailed(failed) {
+          failedList.innerHTML = '';
+          if (failed.length === 0) {
+            var emptyLi = document.createElement('li');
+            emptyLi.id = 'failed-empty';
+            emptyLi.className = 'list-group-item bg-transparent text-white border-0 py-1';
+            emptyLi.textContent = 'None';
+            failedList.appendChild(emptyLi);
+            return;
+          }
+          failed.forEach(function (job) {
+            var li = document.createElement('li');
+            li.className = 'list-group-item bg-transparent border-0 py-2';
+            var link = document.createElement('a');
+            link.href = job.url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'text-info text-truncate d-block';
+            link.style.maxWidth = '100%';
+            link.textContent = job.title || job.url;
+            link.title = job.url;
+            var errLine = document.createElement('div');
+            errLine.className = 'small text-danger mt-1';
+            errLine.textContent = job.error || 'Download failed';
+            li.appendChild(link);
+            li.appendChild(errLine);
+            failedList.appendChild(li);
+          });
+        }
+
         function fetchQueue() {
           fetch('/youtube-dl/queue')
             .then(function (r) {
@@ -259,9 +308,11 @@
             })
             .then(function (data) {
               renderQueue(data.jobs || []);
+              renderFailed(data.failed || []);
             })
             .catch(function () {
               renderQueue([]);
+              renderFailed([]);
             });
         }
 

@@ -49,16 +49,21 @@ _jobs_lock = threading.Lock()
 _next_job_id = 0
 _download_queue = queue.Queue()
 
+# Recent failed jobs (for display). Capped at MAX_FAILED_DISPLAY.
+_failed_jobs = []
+MAX_FAILED_DISPLAY = 20
+
 
 async def redirect(request):
     return RedirectResponse(url="/youtube-dl")
 
 
 async def queue_list(request):
-    """Return JSON list of queued and active downloads."""
+    """Return JSON list of queued, active, and recently failed downloads."""
     with _jobs_lock:
         jobs = list(_jobs)
-    return JSONResponse({"jobs": jobs})
+        failed = list(_failed_jobs)
+    return JSONResponse({"jobs": jobs, "failed": failed})
 
 
 def normalize_youtube_url(url):
@@ -239,10 +244,21 @@ def _download_worker():
                     break
         try:
             _run_download(job_id, url, options)
-        finally:
             with _jobs_lock:
                 for i, j in enumerate(_jobs):
                     if j["id"] == job_id:
+                        _jobs.pop(i)
+                        break
+        except Exception as e:
+            err_msg = str(e).strip() or type(e).__name__
+            with _jobs_lock:
+                for i, j in enumerate(_jobs):
+                    if j["id"] == job_id:
+                        j["status"] = "failed"
+                        j["error"] = err_msg[:500]
+                        _failed_jobs.append(dict(j))
+                        if len(_failed_jobs) > MAX_FAILED_DISPLAY:
+                            _failed_jobs.pop(0)
                         _jobs.pop(i)
                         break
 
