@@ -56,7 +56,16 @@ docker push 10.0.0.52:5000/youtube-dl-server:latest
 
 In Unraid, set the container’s **Repository** to `10.0.0.52:5000/youtube-dl-server` (or `127.0.0.1:5000/youtube-dl-server` if the registry runs on the same host). Add `10.0.0.52:5000` to **Settings, Docker, Insecure registries** if the registry is HTTP.
 
-If Unraid doesn’t detect an update when you push a new `:latest`, remove the image from the Docker page and recreate the container so it pulls again, or use a new tag each time (e.g. `youtube-dl-server:20250315`) and point the template at that tag.
+To use an app data folder (same pattern as other Unraid apps), add a volume and set the path:
+
+| Data Storage Path (host) | Container Path | Purpose |
+|--------------------------|----------------|---------|
+| `/mnt/user/appdata/youtube-dl-server` | `/appdata` | Queue state |
+| `/mnt/user/backup/youtube` | `/youtube-dl` | Downloaded files |
+
+Add environment variable: **Key** `APP_DATA_PATH`, **Value** `/appdata`. The app stores `queue_state.json` under `/appdata`.
+
+If Unraid doesn't detect an update when you push a new `:latest`, remove the image from the Docker page and recreate the container so it pulls again, or use a new tag each time (e.g. `youtube-dl-server:20250315`) and point the template at that tag.
 
 ### Python
 
@@ -68,7 +77,9 @@ YDL_UPDATE_TIME=False python3 -m uvicorn youtube-dl-server:app --port 8123
 
 In this example, `YDL_UPDATE_TIME=False` is the same as the command line option `--no-mtime`.
 
-To persist the download queue and failed list across restarts, set `QUEUE_STATE_FILE` to a path (e.g. `/youtube-dl/queue_state.json`). The file is created automatically; ensure that path is on a volume so it survives container restarts.
+To persist the download queue and failed list across restarts, either set **`APP_DATA_PATH`** to a single folder (e.g. `/appdata`) and mount a volume there (see Unraid example above), or set **`QUEUE_STATE_FILE`** to a path on a volume. With `APP_DATA_PATH` set, the app uses `{APP_DATA_PATH}/queue_state.json` automatically.
+
+The Docker image enables `--remote-components ejs:github` via `/etc/yt-dlp/config` so the YouTube challenge solver is fetched from GitHub at runtime and stays compatible. If you still see **"Signature solving failed"** or **"Only images are available"**, ensure the container can reach the internet when downloading (EJS components are fetched on first use), or add the same line to a user config at `/root/.config/yt-dlp/config`. See the [yt-dlp EJS wiki](https://github.com/yt-dlp/yt-dlp/wiki/EJS) for details.
 
 ## Usage
 

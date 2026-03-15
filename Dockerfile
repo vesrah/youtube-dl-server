@@ -9,16 +9,18 @@ FROM python:alpine
 # Install JS runtime for yt-dlp based on architecture
 # deno is available on: x86_64 (amd64), aarch64 (arm64)
 # nodejs fallback for: armv7, armhf, armv6, armel and other architectures
+# System config enables EJS remote components so the challenge solver stays up to date (fixes "Signature solving failed" / "Only images available")
 RUN apk add --no-cache ffmpeg tzdata && \
   ARCH=$(apk --print-arch) && \
+  mkdir -p /etc/yt-dlp && \
+  echo '--remote-components ejs:github' > /etc/yt-dlp/config && \
   case "$ARCH" in \
     x86_64|aarch64) \
       apk add --no-cache deno \
       ;; \
     *) \
       apk add --no-cache nodejs && \
-      mkdir -p /etc/yt-dlp && \
-      echo "--js-runtimes node" > /etc/yt-dlp/config \
+      echo '--js-runtimes node' >> /etc/yt-dlp/config \
       ;; \
   esac
 

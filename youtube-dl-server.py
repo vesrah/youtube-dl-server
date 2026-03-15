@@ -37,7 +37,12 @@ app_defaults = {
     "YDL_ARCHIVE_FILE": config("YDL_ARCHIVE_FILE", default=None),
     "YDL_UPDATE_TIME": config("YDL_UPDATE_TIME", cast=bool, default=True),
 }
+APP_DATA_PATH = config("APP_DATA_PATH", default=None)
 QUEUE_STATE_FILE = config("QUEUE_STATE_FILE", default=None)
+if APP_DATA_PATH:
+    _appdata = Path(APP_DATA_PATH)
+    if QUEUE_STATE_FILE is None:
+        QUEUE_STATE_FILE = str(_appdata / "queue_state.json")
 
 
 async def dl_queue_list(request):
@@ -116,6 +121,52 @@ async def queue_list(request):
         jobs = list(_jobs)
         failed = list(_failed_jobs)
     return JSONResponse({"jobs": jobs, "failed": failed})
+
+
+async def retry_failed(request):
+    """Re-queue failed job(s). Body: {"id": 123}, {"ids": [1,2,3]}, or {"all": true}."""
+    try:
+        raw = await request.body()
+        body = json.loads(raw) if raw else {}
+    except Exception:
+        body = {}
+    to_retry = []
+    with _jobs_lock:
+        if body.get("all"):
+            to_retry = list(_failed_jobs)
+            _failed_jobs.clear()
+        else:
+            ids = set()
+            if "id" in body:
+                ids.add(body["id"])
+            if "ids" in body:
+                ids.update(body["ids"])
+            for i in range(len(_failed_jobs) - 1, -1, -1):
+                if _failed_jobs[i]["id"] in ids:
+                    to_retry.append(_failed_jobs.pop(i))
+                    if "id" in body and len(ids) == 1:
+                        break
+    if not to_retry:
+        return JSONResponse({"success": True, "retried": 0})
+    global _next_job_id
+    for job in to_retry:
+        url = job.get("url") or ""
+        fmt = job.get("format") or "bestvideo"
+        if not url:
+            continue
+        with _jobs_lock:
+            job_id = _next_job_id
+            _next_job_id += 1
+            _jobs.append({
+                "id": job_id,
+                "url": url,
+                "format": fmt,
+                "status": "queued",
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+        _download_queue.put((job_id, url, {"format": fmt}))
+    _save_queue_state()
+    return JSONResponse({"success": True, "retried": len(to_retry)})
 
 
 def normalize_youtube_url(url):
@@ -249,8 +300,11 @@ def get_ydl_options(request_options, job_id=None):
             }
         )
 
+    format_str = ydl_vars["YDL_FORMAT"]
+    if requested_format == "best":
+        format_str = "best"
     opts = {
-        "format": ydl_vars["YDL_FORMAT"],
+        "format": format_str,
         "postprocessors": postprocessors,
         "outtmpl": ydl_vars["YDL_OUTPUT_TEMPLATE"],
         "download_archive": ydl_vars["YDL_ARCHIVE_FILE"],
@@ -268,19 +322,30 @@ def download(url, request_options):
 
 def _run_download(job_id, url, request_options):
     """Run one download with progress tracking. Does not remove job from _jobs."""
+    def do_download(opts):
+        with YoutubeDL(opts) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                if info and info.get("title"):
+                    with _jobs_lock:
+                        for j in _jobs:
+                            if j["id"] == job_id:
+                                j["title"] = info.get("title", "")[:200]
+                                break
+            except Exception:
+                pass
+            ydl.download([url])
+
     opts = get_ydl_options(request_options, job_id=job_id)
-    with YoutubeDL(opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-            if info and info.get("title"):
-                with _jobs_lock:
-                    for j in _jobs:
-                        if j["id"] == job_id:
-                            j["title"] = info.get("title", "")[:200]
-                            break
-        except Exception:
-            pass
-        ydl.download([url])
+    try:
+        do_download(opts)
+    except Exception as e:
+        err_msg = str(e)
+        if "format" in err_msg.lower() and "not available" in err_msg.lower():
+            fallback_opts = get_ydl_options({**request_options, "format": "best"}, job_id=job_id)
+            do_download(fallback_opts)
+        else:
+            raise
 
 
 def _download_worker():
@@ -333,6 +398,7 @@ routes = [
     Route("/youtube-dl", endpoint=dl_queue_list),
     Route("/youtube-dl/q", endpoint=q_put, methods=["POST"]),
     Route("/youtube-dl/queue", endpoint=queue_list),
+    Route("/youtube-dl/retry", endpoint=retry_failed, methods=["POST"]),
     Route("/youtube-dl/update", endpoint=update_route, methods=["PUT"]),
 ]
 

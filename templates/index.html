@@ -88,7 +88,10 @@
           </ul>
         </section>
         <section class="mt-4 text-start" id="failed-section" aria-label="Failed downloads">
-          <h2 class="h5 text-white">Failed</h2>
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <h2 class="h5 text-white mb-0">Failed</h2>
+            <span id="retry-all-placeholder"></span>
+          </div>
           <ul class="list-group list-group-flush bg-transparent" id="failed-list">
             <li class="list-group-item bg-transparent text-white border-0 py-1" id="failed-empty">None</li>
           </ul>
@@ -271,7 +274,17 @@
 
         var failedList = document.getElementById('failed-list');
 
+        function retryFailed(opts) {
+          fetch('/youtube-dl/retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(opts)
+          }).then(function () { fetchQueue(); });
+        }
+
         function renderFailed(failed) {
+          var retryAllPlaceholder = document.getElementById('retry-all-placeholder');
+          retryAllPlaceholder.innerHTML = '';
           failedList.innerHTML = '';
           if (failed.length === 0) {
             var emptyLi = document.createElement('li');
@@ -281,9 +294,21 @@
             failedList.appendChild(emptyLi);
             return;
           }
+          var retryAllBtn = document.createElement('button');
+          retryAllBtn.className = 'btn btn-sm btn-outline-light';
+          retryAllBtn.textContent = 'Retry all';
+          retryAllBtn.type = 'button';
+          retryAllBtn.addEventListener('click', function () {
+            if (retryAllBtn.disabled) return;
+            retryAllBtn.disabled = true;
+            retryFailed({ all: true });
+          });
+          retryAllPlaceholder.appendChild(retryAllBtn);
           failed.forEach(function (job) {
             var li = document.createElement('li');
-            li.className = 'list-group-item bg-transparent border-0 py-2';
+            li.className = 'list-group-item bg-transparent border-0 py-2 d-flex align-items-start gap-2';
+            var left = document.createElement('div');
+            left.className = 'flex-grow-1 min-width-0';
             var link = document.createElement('a');
             link.href = job.url;
             link.target = '_blank';
@@ -295,8 +320,19 @@
             var errLine = document.createElement('div');
             errLine.className = 'small text-danger mt-1';
             errLine.textContent = job.error || 'Download failed';
-            li.appendChild(link);
-            li.appendChild(errLine);
+            left.appendChild(link);
+            left.appendChild(errLine);
+            var retryBtn = document.createElement('button');
+            retryBtn.className = 'btn btn-sm btn-outline-light text-nowrap';
+            retryBtn.textContent = 'Retry';
+            retryBtn.type = 'button';
+            retryBtn.addEventListener('click', function () {
+              if (retryBtn.disabled) return;
+              retryBtn.disabled = true;
+              retryFailed({ id: job.id });
+            });
+            li.appendChild(left);
+            li.appendChild(retryBtn);
             failedList.appendChild(li);
           });
         }
