@@ -1,3 +1,4 @@
+import queue
 import sys
 import subprocess
 import threading
@@ -13,6 +14,8 @@ from starlette.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from yt_dlp import YoutubeDL, version
+
+MAX_CONCURRENT_DOWNLOADS = 2
 
 templates = Jinja2Templates(directory="templates")
 config = Config(".env")
@@ -40,10 +43,11 @@ async def dl_queue_list(request):
     )
 
 
-# In-memory list of currently running downloads (thread-safe)
-_download_jobs = []
-_download_jobs_lock = threading.Lock()
+# All jobs (queued + downloading). Max MAX_CONCURRENT_DOWNLOADS run at once.
+_jobs = []
+_jobs_lock = threading.Lock()
 _next_job_id = 0
+_download_queue = queue.Queue()
 
 
 async def redirect(request):
@@ -51,9 +55,9 @@ async def redirect(request):
 
 
 async def queue_list(request):
-    """Return JSON list of currently running downloads."""
-    with _download_jobs_lock:
-        jobs = list(_download_jobs)
+    """Return JSON list of queued and active downloads."""
+    with _jobs_lock:
+        jobs = list(_jobs)
     return JSONResponse({"jobs": jobs})
 
 
@@ -92,28 +96,26 @@ async def q_put(request):
         )
 
     global _next_job_id
-    with _download_jobs_lock:
+    with _jobs_lock:
         job_id = _next_job_id
         _next_job_id += 1
         job = {
             "id": job_id,
             "url": url,
             "format": options.get("format", "bestvideo"),
-            "status": "downloading",
+            "status": "queued",
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        _download_jobs.append(job)
+        _jobs.append(job)
 
-    task = BackgroundTask(download_with_tracking, job_id, url, options)
+    _download_queue.put((job_id, url, options))
 
     print("Added url " + url + " to the download queue")
 
     if not ui:
-        return JSONResponse(
-            {"success": True, "url": url, "options": options}, background=task
-        )
+        return JSONResponse({"success": True, "url": url, "options": options})
     return RedirectResponse(
-        url="/youtube-dl?added=" + url, status_code=HTTP_303_SEE_OTHER, background=task
+        url="/youtube-dl?added=" + url, status_code=HTTP_303_SEE_OTHER
     )
 
 
@@ -136,8 +138,8 @@ def update():
 
 def _update_job_progress(job_id, progress_dict):
     """Update a job's progress fields from yt-dlp progress hook."""
-    with _download_jobs_lock:
-        for j in _download_jobs:
+    with _jobs_lock:
+        for j in _jobs:
             if j["id"] == job_id:
                 j["status"] = progress_dict.get("status", j.get("status", "downloading"))
                 if "downloaded_bytes" in progress_dict:
@@ -206,28 +208,48 @@ def download(url, request_options):
         ydl.download([url])
 
 
-def download_with_tracking(job_id, url, request_options):
-    """Run download with progress tracking; remove job when done."""
+def _run_download(job_id, url, request_options):
+    """Run one download with progress tracking. Does not remove job from _jobs."""
     opts = get_ydl_options(request_options, job_id=job_id)
-    try:
-        with YoutubeDL(opts) as ydl:
-            try:
-                info = ydl.extract_info(url, download=False)
-                if info and info.get("title"):
-                    with _download_jobs_lock:
-                        for j in _download_jobs:
-                            if j["id"] == job_id:
-                                j["title"] = info.get("title", "")[:200]
-                                break
-            except Exception:
-                pass
-            ydl.download([url])
-    finally:
-        with _download_jobs_lock:
-            for i, j in enumerate(_download_jobs):
+    with YoutubeDL(opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            if info and info.get("title"):
+                with _jobs_lock:
+                    for j in _jobs:
+                        if j["id"] == job_id:
+                            j["title"] = info.get("title", "")[:200]
+                            break
+        except Exception:
+            pass
+        ydl.download([url])
+
+
+def _download_worker():
+    """Worker that runs at most MAX_CONCURRENT_DOWNLOADS total; pulls from queue."""
+    while True:
+        job_id, url, options = _download_queue.get()
+        with _jobs_lock:
+            for j in _jobs:
                 if j["id"] == job_id:
-                    _download_jobs.pop(i)
+                    j["status"] = "downloading"
+                    j["started_at"] = time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                    )
                     break
+        try:
+            _run_download(job_id, url, options)
+        finally:
+            with _jobs_lock:
+                for i, j in enumerate(_jobs):
+                    if j["id"] == job_id:
+                        _jobs.pop(i)
+                        break
+
+
+for _ in range(MAX_CONCURRENT_DOWNLOADS):
+    t = threading.Thread(target=_download_worker, daemon=True)
+    t.start()
 
 
 routes = [

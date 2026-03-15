@@ -79,11 +79,11 @@
             </button>
           </div>
         </form>
-        <section class="mt-4 text-start" id="queue-section" aria-label="Active downloads">
-          <h2 class="h5 text-white">Active downloads</h2>
+        <section class="mt-4 text-start" id="queue-section" aria-label="Download queue">
+          <h2 class="h5 text-white">Download queue</h2>
           <ul class="list-group list-group-flush bg-transparent" id="queue-list">
-            <li class="list-group-item bg-transparent text-muted border-0 py-1" id="queue-empty">
-              None
+            <li class="list-group-item bg-transparent text-white border-0 py-1" id="queue-empty">
+              No downloads
             </li>
           </ul>
         </section>
@@ -109,9 +109,6 @@
     ></script>
     <script>
       var alertPlaceholder = document.getElementById('liveAlertPlaceholder');
-
-      const urlParams = new URLSearchParams(window.location.search);
-      const added = urlParams.get('added');
 
       function normalizeYoutubeUrl(url) {
         if (!url || typeof url !== 'string') return url;
@@ -161,18 +158,25 @@
         alertPlaceholder.append(wrapper);
       }
 
-      if (added) {
-        alert(
-          'Successfully added <a href=' +
-            added +
-            '>one item</a> to the download queue',
-          'success',
-        );
-      }
-
       (function () {
         var queueList = document.getElementById('queue-list');
-        var queueEmpty = document.getElementById('queue-empty');
+        var formatDisplayNames = {
+          bestvideo: 'Best Video',
+          mp4: 'MP4',
+          flv: 'Flash Video (FLV)',
+          webm: 'WebM',
+          ogg: 'Ogg',
+          mkv: 'Matroska (MKV)',
+          avi: 'AVI',
+          bestaudio: 'Best Audio',
+          aac: 'AAC',
+          flac: 'FLAC',
+          mp3: 'MP3',
+          m4a: 'M4A',
+          opus: 'Opus',
+          vorbis: 'Vorbis',
+          wav: 'WAV'
+        };
 
         function formatBytes(n) {
           if (n == null || n === undefined) return '';
@@ -194,10 +198,15 @@
         }
 
         function renderQueue(jobs) {
-          queueEmpty.style.display = jobs.length ? 'none' : '';
-          queueList.querySelectorAll('[data-queue-job]').forEach(function (el) {
-            el.remove();
-          });
+          queueList.innerHTML = '';
+          if (jobs.length === 0) {
+            var emptyLi = document.createElement('li');
+            emptyLi.id = 'queue-empty';
+            emptyLi.className = 'list-group-item bg-transparent text-white border-0 py-1';
+            emptyLi.textContent = 'No downloads';
+            queueList.appendChild(emptyLi);
+            return;
+          }
           jobs.forEach(function (job) {
             var li = document.createElement('li');
             li.setAttribute('data-queue-job', '');
@@ -216,8 +225,8 @@
             link.title = job.url;
 
             var badge = document.createElement('span');
-            badge.className = 'badge bg-secondary text-nowrap';
-            badge.textContent = job.format || 'downloading';
+            badge.className = (job.status === 'queued' ? 'badge bg-dark text-nowrap' : 'badge bg-secondary text-nowrap') + ' px-2';
+            badge.textContent = job.status === 'queued' ? 'Queued' : (formatDisplayNames[job.format] || job.format || 'downloading');
 
             topRow.appendChild(link);
             topRow.appendChild(badge);
@@ -235,7 +244,7 @@
             }
             if (job.speed != null) parts.push(formatBytes(job.speed) + '/s');
             if (job.eta != null) parts.push('ETA ' + formatEta(job.eta));
-            progressLine.textContent = parts.length ? parts.join(' · ') : 'Starting…';
+            progressLine.textContent = parts.length ? parts.join(' · ') : (job.status === 'queued' ? 'Waiting…' : 'Starting…');
 
             li.appendChild(topRow);
             li.appendChild(progressLine);
