@@ -44,6 +44,20 @@ This is an example service definition that could be put in `docker-compose.yml`.
     restart: always
 ```
 
+### Build and deploy (private registry / Unraid)
+
+Build from source and push to a private Docker registry (e.g. for Unraid). Use `--platform linux/amd64` so the image runs natively on amd64 hosts; use `--no-cache` for a clean build.
+
+```shell
+# Build for amd64 and push to registry (e.g. 10.0.0.52:5000)
+docker build --no-cache --platform linux/amd64 -t 10.0.0.52:5000/youtube-dl-server:latest .
+docker push 10.0.0.52:5000/youtube-dl-server:latest
+```
+
+In Unraid, set the container’s **Repository** to `10.0.0.52:5000/youtube-dl-server` (or `127.0.0.1:5000/youtube-dl-server` if the registry runs on the same host). Add `10.0.0.52:5000` to **Settings, Docker, Insecure registries** if the registry is HTTP.
+
+If Unraid doesn’t detect an update when you push a new `:latest`, remove the image from the Docker page and recreate the container so it pulls again, or use a new tag each time (e.g. `youtube-dl-server:20250315`) and point the template at that tag.
+
 ### Python
 
 If you have python ^3.6.0 installed in your PATH you can simply run like this, providing optional environment variable overrides inline.
