@@ -1,8 +1,10 @@
+import json
 import queue
 import sys
 import subprocess
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 from starlette.status import HTTP_303_SEE_OTHER
@@ -35,6 +37,7 @@ app_defaults = {
     "YDL_ARCHIVE_FILE": config("YDL_ARCHIVE_FILE", default=None),
     "YDL_UPDATE_TIME": config("YDL_UPDATE_TIME", cast=bool, default=True),
 }
+QUEUE_STATE_FILE = config("QUEUE_STATE_FILE", default=None)
 
 
 async def dl_queue_list(request):
@@ -52,6 +55,55 @@ _download_queue = queue.Queue()
 # Recent failed jobs (for display). Capped at MAX_FAILED_DISPLAY.
 _failed_jobs = []
 MAX_FAILED_DISPLAY = 20
+
+
+def _load_queue_state():
+    """Restore queue and failed list from file (if QUEUE_STATE_FILE set)."""
+    if not QUEUE_STATE_FILE:
+        return
+    path = Path(QUEUE_STATE_FILE)
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    global _next_job_id
+    with _jobs_lock:
+        for item in data.get("pending", []):
+            url = item.get("url") or ""
+            fmt = item.get("format") or "bestvideo"
+            job_id = _next_job_id
+            _next_job_id += 1
+            _jobs.append({
+                "id": job_id,
+                "url": url,
+                "format": fmt,
+                "status": "queued",
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            _download_queue.put((job_id, url, {"format": fmt}))
+        _failed_jobs[:] = data.get("failed", [])[:MAX_FAILED_DISPLAY]
+    if data.get("pending"):
+        print("Restored %d queued job(s) from %s" % (len(data.get("pending", [])), QUEUE_STATE_FILE))
+
+
+def _save_queue_state():
+    """Write queue and failed list to file (if QUEUE_STATE_FILE set)."""
+    if not QUEUE_STATE_FILE:
+        return
+    with _jobs_lock:
+        pending = [{"url": j["url"], "format": j["format"]} for j in _jobs]
+        failed = list(_failed_jobs)
+    try:
+        path = Path(QUEUE_STATE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"pending": pending, "failed": failed}, indent=0),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print("Failed to save queue state: %s" % e)
 
 
 async def redirect(request):
@@ -114,6 +166,7 @@ async def q_put(request):
         _jobs.append(job)
 
     _download_queue.put((job_id, url, options))
+    _save_queue_state()
 
     print("Added url " + url + " to the download queue")
 
@@ -249,6 +302,7 @@ def _download_worker():
                     if j["id"] == job_id:
                         _jobs.pop(i)
                         break
+            _save_queue_state()
         except Exception as e:
             err_msg = str(e).strip() or type(e).__name__
             with _jobs_lock:
@@ -261,12 +315,14 @@ def _download_worker():
                             _failed_jobs.pop(0)
                         _jobs.pop(i)
                         break
+            _save_queue_state()
 
 
 for _ in range(MAX_CONCURRENT_DOWNLOADS):
     t = threading.Thread(target=_download_worker, daemon=True)
     t.start()
 
+_load_queue_state()
 
 routes = [
     Route("/", endpoint=redirect),

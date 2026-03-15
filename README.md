@@ -68,6 +68,8 @@ YDL_UPDATE_TIME=False python3 -m uvicorn youtube-dl-server:app --port 8123
 
 In this example, `YDL_UPDATE_TIME=False` is the same as the command line option `--no-mtime`.
 
+To persist the download queue and failed list across restarts, set `QUEUE_STATE_FILE` to a path (e.g. `/youtube-dl/queue_state.json`). The file is created automatically; ensure that path is on a volume so it survives container restarts.
+
 ## Usage
 
 ### Start a download remotely
