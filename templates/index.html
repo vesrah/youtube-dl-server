@@ -79,6 +79,14 @@
             </button>
           </div>
         </form>
+        <section class="mt-4 text-start" id="queue-section" aria-label="Active downloads">
+          <h2 class="h5 text-white">Active downloads</h2>
+          <ul class="list-group list-group-flush bg-transparent" id="queue-list">
+            <li class="list-group-item bg-transparent text-muted border-0 py-1" id="queue-empty">
+              None
+            </li>
+          </ul>
+        </section>
       </main>
       <footer class="mt-auto text-muted">
         <div id="liveAlertPlaceholder"></div>
@@ -161,6 +169,96 @@
           'success',
         );
       }
+
+      (function () {
+        var queueList = document.getElementById('queue-list');
+        var queueEmpty = document.getElementById('queue-empty');
+
+        function formatBytes(n) {
+          if (n == null || n === undefined) return '';
+          if (n < 1024) return n + ' B';
+          if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+          if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+          return (n / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        }
+
+        function formatEta(sec) {
+          if (sec == null || sec === undefined || sec < 0) return '';
+          if (sec < 60) return sec + 's';
+          var m = Math.floor(sec / 60);
+          var s = Math.floor(sec % 60);
+          if (m < 60) return m + 'm ' + s + 's';
+          var h = Math.floor(m / 60);
+          m = m % 60;
+          return h + 'h ' + m + 'm';
+        }
+
+        function renderQueue(jobs) {
+          queueEmpty.style.display = jobs.length ? 'none' : '';
+          queueList.querySelectorAll('[data-queue-job]').forEach(function (el) {
+            el.remove();
+          });
+          jobs.forEach(function (job) {
+            var li = document.createElement('li');
+            li.setAttribute('data-queue-job', '');
+            li.className = 'list-group-item bg-transparent border-0 py-2';
+
+            var topRow = document.createElement('div');
+            topRow.className = 'd-flex align-items-center gap-2';
+
+            var link = document.createElement('a');
+            link.href = job.url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'text-info text-truncate';
+            link.style.maxWidth = '100%';
+            link.textContent = job.title || job.url;
+            link.title = job.url;
+
+            var badge = document.createElement('span');
+            badge.className = 'badge bg-secondary text-nowrap';
+            badge.textContent = job.format || 'downloading';
+
+            topRow.appendChild(link);
+            topRow.appendChild(badge);
+
+            var progressLine = document.createElement('div');
+            progressLine.className = 'small text-white-50 mt-1';
+            var db = job.downloaded_bytes;
+            var tb = job.total_bytes;
+            var parts = [];
+            if (db != null && tb != null && tb > 0) {
+              parts.push(formatBytes(db) + ' / ' + formatBytes(tb));
+              parts.push('(' + Math.round((db / tb) * 100) + '%)');
+            } else if (db != null) {
+              parts.push(formatBytes(db) + ' downloaded');
+            }
+            if (job.speed != null) parts.push(formatBytes(job.speed) + '/s');
+            if (job.eta != null) parts.push('ETA ' + formatEta(job.eta));
+            progressLine.textContent = parts.length ? parts.join(' · ') : 'Starting…';
+
+            li.appendChild(topRow);
+            li.appendChild(progressLine);
+            queueList.appendChild(li);
+          });
+        }
+
+        function fetchQueue() {
+          fetch('/youtube-dl/queue')
+            .then(function (r) {
+              return r.json();
+            })
+            .then(function (data) {
+              renderQueue(data.jobs || []);
+            })
+            .catch(function () {
+              renderQueue([]);
+            });
+        }
+
+        fetchQueue();
+        setInterval(fetchQueue, 1000);
+      })();
     </script>
   </body>
 </html>

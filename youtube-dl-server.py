@@ -1,5 +1,7 @@
 import sys
 import subprocess
+import threading
+import time
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 from starlette.status import HTTP_303_SEE_OTHER
@@ -38,8 +40,21 @@ async def dl_queue_list(request):
     )
 
 
+# In-memory list of currently running downloads (thread-safe)
+_download_jobs = []
+_download_jobs_lock = threading.Lock()
+_next_job_id = 0
+
+
 async def redirect(request):
     return RedirectResponse(url="/youtube-dl")
+
+
+async def queue_list(request):
+    """Return JSON list of currently running downloads."""
+    with _download_jobs_lock:
+        jobs = list(_download_jobs)
+    return JSONResponse({"jobs": jobs})
 
 
 def normalize_youtube_url(url):
@@ -76,7 +91,20 @@ async def q_put(request):
             {"success": False, "error": "/q called without a 'url' in form data"}
         )
 
-    task = BackgroundTask(download, url, options)
+    global _next_job_id
+    with _download_jobs_lock:
+        job_id = _next_job_id
+        _next_job_id += 1
+        job = {
+            "id": job_id,
+            "url": url,
+            "format": options.get("format", "bestvideo"),
+            "status": "downloading",
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _download_jobs.append(job)
+
+    task = BackgroundTask(download_with_tracking, job_id, url, options)
 
     print("Added url " + url + " to the download queue")
 
@@ -106,7 +134,26 @@ def update():
         print(e.output)
 
 
-def get_ydl_options(request_options):
+def _update_job_progress(job_id, progress_dict):
+    """Update a job's progress fields from yt-dlp progress hook."""
+    with _download_jobs_lock:
+        for j in _download_jobs:
+            if j["id"] == job_id:
+                j["status"] = progress_dict.get("status", j.get("status", "downloading"))
+                if "downloaded_bytes" in progress_dict:
+                    j["downloaded_bytes"] = progress_dict["downloaded_bytes"]
+                if "total_bytes" in progress_dict:
+                    j["total_bytes"] = progress_dict["total_bytes"]
+                elif "total_bytes_estimate" in progress_dict:
+                    j["total_bytes"] = progress_dict["total_bytes_estimate"]
+                if "speed" in progress_dict:
+                    j["speed"] = progress_dict["speed"]
+                if "eta" in progress_dict:
+                    j["eta"] = progress_dict["eta"]
+                break
+
+
+def get_ydl_options(request_options, job_id=None):
     request_vars = {
         "YDL_EXTRACT_AUDIO_FORMAT": None,
         "YDL_RECODE_VIDEO_FORMAT": None,
@@ -142,13 +189,16 @@ def get_ydl_options(request_options):
             }
         )
 
-    return {
+    opts = {
         "format": ydl_vars["YDL_FORMAT"],
         "postprocessors": postprocessors,
         "outtmpl": ydl_vars["YDL_OUTPUT_TEMPLATE"],
         "download_archive": ydl_vars["YDL_ARCHIVE_FILE"],
         "updatetime": ydl_vars["YDL_UPDATE_TIME"] == "True",
     }
+    if job_id is not None:
+        opts["progress_hooks"] = [lambda d, jid=job_id: _update_job_progress(jid, d)]
+    return opts
 
 
 def download(url, request_options):
@@ -156,10 +206,35 @@ def download(url, request_options):
         ydl.download([url])
 
 
+def download_with_tracking(job_id, url, request_options):
+    """Run download with progress tracking; remove job when done."""
+    opts = get_ydl_options(request_options, job_id=job_id)
+    try:
+        with YoutubeDL(opts) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                if info and info.get("title"):
+                    with _download_jobs_lock:
+                        for j in _download_jobs:
+                            if j["id"] == job_id:
+                                j["title"] = info.get("title", "")[:200]
+                                break
+            except Exception:
+                pass
+            ydl.download([url])
+    finally:
+        with _download_jobs_lock:
+            for i, j in enumerate(_download_jobs):
+                if j["id"] == job_id:
+                    _download_jobs.pop(i)
+                    break
+
+
 routes = [
     Route("/", endpoint=redirect),
     Route("/youtube-dl", endpoint=dl_queue_list),
     Route("/youtube-dl/q", endpoint=q_put, methods=["POST"]),
+    Route("/youtube-dl/queue", endpoint=queue_list),
     Route("/youtube-dl/update", endpoint=update_route, methods=["PUT"]),
 ]
 
