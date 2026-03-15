@@ -1,5 +1,6 @@
 import sys
 import subprocess
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 from starlette.status import HTTP_303_SEE_OTHER
 from starlette.applications import Starlette
@@ -41,9 +42,32 @@ async def redirect(request):
     return RedirectResponse(url="/youtube-dl")
 
 
+def normalize_youtube_url(url):
+    """Trim YouTube URLs to only the video identifier (e.g. ?v=VIDEO_ID)."""
+    try:
+        parsed = urlparse(url)
+        netloc_lower = (parsed.netloc or "").lower()
+        # youtube.com/watch?v=...
+        if "youtube.com" in netloc_lower and parsed.path.rstrip("/") == "/watch":
+            qs = parse_qs(parsed.query)
+            if "v" in qs:
+                video_id = qs["v"][0]
+                new_query = urlencode({"v": video_id})
+                return urlunparse(
+                    (parsed.scheme, parsed.netloc, parsed.path, "", new_query, "")
+                )
+        # youtu.be/VIDEO_ID
+        if "youtu.be" in netloc_lower and parsed.path:
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    except Exception:
+        pass
+    return url
+
+
 async def q_put(request):
     form = await request.form()
-    url = form.get("url").strip()
+    raw_url = (form.get("url") or "").strip()
+    url = normalize_youtube_url(raw_url) if raw_url else ""
     ui = form.get("ui")
     options = {"format": form.get("format")}
 

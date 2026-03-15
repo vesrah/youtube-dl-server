@@ -105,6 +105,43 @@
       const urlParams = new URLSearchParams(window.location.search);
       const added = urlParams.get('added');
 
+      function normalizeYoutubeUrl(url) {
+        if (!url || typeof url !== 'string') return url;
+        try {
+          var parsed = new URL(url.trim());
+          var host = parsed.hostname.toLowerCase();
+          if (host.includes('youtube.com') && parsed.pathname.replace(/\/$/, '') === '/watch') {
+            var v = parsed.searchParams.get('v');
+            if (v) {
+              return parsed.origin + parsed.pathname + '?v=' + encodeURIComponent(v);
+            }
+          }
+          if (host.includes('youtu.be') && parsed.pathname) {
+            return parsed.origin + parsed.pathname;
+          }
+        } catch (e) {}
+        return url;
+      }
+
+      (function () {
+        var form = document.querySelector('form[action="/youtube-dl/q"]');
+        var urlInput = form && form.querySelector('input[name="url"]');
+        if (!urlInput) return;
+
+        urlInput.addEventListener('paste', function () {
+          var el = this;
+          setTimeout(function () {
+            var normalized = normalizeYoutubeUrl(el.value);
+            if (normalized !== el.value) el.value = normalized;
+          }, 0);
+        });
+
+        form.addEventListener('submit', function (e) {
+          var normalized = normalizeYoutubeUrl(urlInput.value);
+          if (normalized !== urlInput.value) urlInput.value = normalized;
+        });
+      })();
+
       function alert(message, type) {
         var wrapper = document.createElement('div');
         wrapper.innerHTML =
