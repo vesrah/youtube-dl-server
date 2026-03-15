@@ -286,36 +286,40 @@ def _run_download(job_id, url, request_options):
 def _download_worker():
     """Worker that runs at most MAX_CONCURRENT_DOWNLOADS total; pulls from queue."""
     while True:
-        job_id, url, options = _download_queue.get()
-        with _jobs_lock:
-            for j in _jobs:
-                if j["id"] == job_id:
-                    j["status"] = "downloading"
-                    j["started_at"] = time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                    )
-                    break
         try:
-            _run_download(job_id, url, options)
+            job_id, url, options = _download_queue.get()
             with _jobs_lock:
-                for i, j in enumerate(_jobs):
+                for j in _jobs:
                     if j["id"] == job_id:
-                        _jobs.pop(i)
+                        j["status"] = "downloading"
+                        j["started_at"] = time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                        )
                         break
-            _save_queue_state()
-        except Exception as e:
-            err_msg = str(e).strip() or type(e).__name__
-            with _jobs_lock:
-                for i, j in enumerate(_jobs):
-                    if j["id"] == job_id:
-                        j["status"] = "failed"
-                        j["error"] = err_msg[:500]
-                        _failed_jobs.append(dict(j))
-                        if len(_failed_jobs) > MAX_FAILED_DISPLAY:
-                            _failed_jobs.pop(0)
-                        _jobs.pop(i)
-                        break
-            _save_queue_state()
+            try:
+                _run_download(job_id, url, options)
+                with _jobs_lock:
+                    for i, j in enumerate(_jobs):
+                        if j["id"] == job_id:
+                            _jobs.pop(i)
+                            break
+                _save_queue_state()
+            except BaseException as e:
+                err_msg = str(e).strip() or type(e).__name__
+                with _jobs_lock:
+                    for i, j in enumerate(_jobs):
+                        if j["id"] == job_id:
+                            j["status"] = "failed"
+                            j["error"] = err_msg[:500]
+                            _failed_jobs.append(dict(j))
+                            if len(_failed_jobs) > MAX_FAILED_DISPLAY:
+                                _failed_jobs.pop(0)
+                            _jobs.pop(i)
+                            break
+                _save_queue_state()
+                print("Download failed (%s): %s" % (url, err_msg[:200]))
+        except BaseException as e:
+            print("Worker error (queue continues): %s" % e)
 
 
 for _ in range(MAX_CONCURRENT_DOWNLOADS):
