@@ -109,6 +109,12 @@
             >@manbearwiz</a
           >.
         </p>
+        {% if git_commit %}
+        <p class="small text-white-50">
+          Built from commit
+          <code class="text-white-50">{{ git_commit[:7] }}</code>
+        </p>
+        {% endif %}
       </footer>
     </div>
     <script
@@ -282,6 +288,14 @@
           }).then(function () { fetchQueue(); });
         }
 
+        function removeFailed(opts) {
+          fetch('/youtube-dl/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(opts)
+          }).then(function () { fetchQueue(); });
+        }
+
         function renderFailed(failed) {
           var retryAllPlaceholder = document.getElementById('retry-all-placeholder');
           retryAllPlaceholder.innerHTML = '';
@@ -304,6 +318,16 @@
             retryFailed({ all: true });
           });
           retryAllPlaceholder.appendChild(retryAllBtn);
+          var clearAllBtn = document.createElement('button');
+          clearAllBtn.className = 'btn btn-sm btn-outline-light ms-2';
+          clearAllBtn.textContent = 'Clear all';
+          clearAllBtn.type = 'button';
+          clearAllBtn.addEventListener('click', function () {
+            if (clearAllBtn.disabled) return;
+            clearAllBtn.disabled = true;
+            removeFailed({ all: true });
+          });
+          retryAllPlaceholder.appendChild(clearAllBtn);
           failed.forEach(function (job) {
             var li = document.createElement('li');
             li.className = 'list-group-item bg-transparent border-0 py-2 d-flex align-items-start gap-2';
@@ -331,8 +355,20 @@
               retryBtn.disabled = true;
               retryFailed({ id: job.id });
             });
+            var removeBtn = document.createElement('button');
+            removeBtn.className = 'btn btn-sm btn-outline-light text-nowrap';
+            removeBtn.textContent = '\u2715';
+            removeBtn.type = 'button';
+            removeBtn.title = 'Remove from list';
+            removeBtn.setAttribute('aria-label', 'Remove from list');
+            removeBtn.addEventListener('click', function () {
+              if (removeBtn.disabled) return;
+              removeBtn.disabled = true;
+              removeFailed({ id: job.id });
+            });
             li.appendChild(left);
             li.appendChild(retryBtn);
+            li.appendChild(removeBtn);
             failedList.appendChild(li);
           });
         }

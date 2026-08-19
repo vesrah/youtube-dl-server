@@ -37,6 +37,35 @@ app_defaults = {
     "YDL_ARCHIVE_FILE": config("YDL_ARCHIVE_FILE", default=None),
     "YDL_UPDATE_TIME": config("YDL_UPDATE_TIME", cast=bool, default=True),
 }
+
+
+def _read_git_commit():
+    """Commit the running code was built from.
+
+    GIT_COMMIT is baked in at image build time; fall back to reading the
+    checkout directly so a local run reports the right sha too.
+    """
+    commit = config("GIT_COMMIT", default=None)
+    if commit and commit.strip():
+        return commit.strip()
+    git_dir = Path(__file__).resolve().parent / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head or None
+        ref = head[5:].strip()
+        ref_file = git_dir / ref
+        if ref_file.exists():
+            return ref_file.read_text(encoding="utf-8").strip() or None
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+            if line.endswith(" " + ref):
+                return line.split(" ", 1)[0]
+    except OSError:
+        pass
+    return None
+
+
+GIT_COMMIT = _read_git_commit()
 APP_DATA_PATH = config("APP_DATA_PATH", default=None)
 QUEUE_STATE_FILE = config("QUEUE_STATE_FILE", default=None)
 if APP_DATA_PATH:
@@ -47,7 +76,12 @@ if APP_DATA_PATH:
 
 async def dl_queue_list(request):
     return templates.TemplateResponse(
-        "index.html", {"request": request, "ytdlp_version": version.__version__}
+        "index.html",
+        {
+            "request": request,
+            "ytdlp_version": version.__version__,
+            "git_commit": GIT_COMMIT,
+        },
     )
 
 
@@ -60,6 +94,9 @@ _download_queue = queue.Queue()
 # Recent failed jobs (for display). Capped at MAX_FAILED_DISPLAY.
 _failed_jobs = []
 MAX_FAILED_DISPLAY = 20
+
+# Leftovers yt-dlp writes next to an unfinished download.
+PARTIAL_SUFFIXES = (".part", ".ytdl")
 
 
 def _load_queue_state():
@@ -123,6 +160,65 @@ async def queue_list(request):
     return JSONResponse({"jobs": jobs, "failed": failed})
 
 
+def _video_id_from_url(url):
+    """Best-effort video id from a URL, used to match its partial files."""
+    try:
+        parsed = urlparse(url)
+        netloc_lower = (parsed.netloc or "").lower()
+        if "youtube.com" in netloc_lower:
+            qs = parse_qs(parsed.query)
+            if qs.get("v") and qs["v"][0]:
+                return qs["v"][0]
+        if "youtu.be" in netloc_lower:
+            candidate = parsed.path.strip("/").split("/")[0]
+            if candidate:
+                return candidate
+    except Exception:
+        pass
+    return None
+
+
+def _download_dir():
+    """The directory YDL_OUTPUT_TEMPLATE writes into, ignoring its format fields."""
+    template = app_defaults["YDL_OUTPUT_TEMPLATE"]
+    literal_head = template.split("%(")[0]
+    if not literal_head:
+        return None
+    path = Path(literal_head)
+    return path if literal_head.endswith("/") else path.parent
+
+
+def _delete_partial_files(url):
+    """Delete leftover .part/.ytdl files for a video so a retry starts clean.
+
+    Left in place, yt-dlp resumes mid-file, and the ranged request that
+    follows is refused with a 403, so the retry fails exactly as before.
+    """
+    video_id = _video_id_from_url(url)
+    if not video_id:
+        return []
+    directory = _download_dir()
+    if directory is None or not directory.is_dir():
+        return []
+    try:
+        entries = list(directory.iterdir())
+    except OSError as e:
+        print("Could not scan %s for partial files: %s" % (directory, e))
+        return []
+    removed = []
+    for entry in entries:
+        if not entry.name.endswith(PARTIAL_SUFFIXES) or video_id not in entry.name:
+            continue
+        try:
+            entry.unlink()
+            removed.append(entry.name)
+        except OSError as e:
+            print("Could not delete %s: %s" % (entry.name, e))
+    if removed:
+        print("Deleted %d partial file(s) before retrying %s" % (len(removed), url))
+    return removed
+
+
 async def retry_failed(request):
     """Re-queue failed job(s). Body: {"id": 123}, {"ids": [1,2,3]}, or {"all": true}."""
     try:
@@ -149,11 +245,16 @@ async def retry_failed(request):
     if not to_retry:
         return JSONResponse({"success": True, "retried": 0})
     global _next_job_id
+    # A URL already downloading owns its .part file; leave that one alone.
+    with _jobs_lock:
+        active_urls = {j["url"] for j in _jobs}
     for job in to_retry:
         url = job.get("url") or ""
         fmt = job.get("format") or "bestvideo"
         if not url:
             continue
+        if url not in active_urls:
+            _delete_partial_files(url)
         with _jobs_lock:
             job_id = _next_job_id
             _next_job_id += 1
@@ -167,6 +268,31 @@ async def retry_failed(request):
         _download_queue.put((job_id, url, {"format": fmt}))
     _save_queue_state()
     return JSONResponse({"success": True, "retried": len(to_retry)})
+
+
+async def remove_failed(request):
+    """Drop failed job(s) from the list. Body: {"id": 123}, {"ids": [1,2,3]}, or {"all": true}."""
+    try:
+        raw = await request.body()
+        body = json.loads(raw) if raw else {}
+    except Exception:
+        body = {}
+    with _jobs_lock:
+        if body.get("all"):
+            removed = len(_failed_jobs)
+            _failed_jobs.clear()
+        else:
+            ids = set()
+            if "id" in body:
+                ids.add(body["id"])
+            if "ids" in body:
+                ids.update(body["ids"])
+            before = len(_failed_jobs)
+            _failed_jobs[:] = [j for j in _failed_jobs if j["id"] not in ids]
+            removed = before - len(_failed_jobs)
+    if removed:
+        _save_queue_state()
+    return JSONResponse({"success": True, "removed": removed})
 
 
 def normalize_youtube_url(url):
@@ -399,6 +525,7 @@ routes = [
     Route("/youtube-dl/q", endpoint=q_put, methods=["POST"]),
     Route("/youtube-dl/queue", endpoint=queue_list),
     Route("/youtube-dl/retry", endpoint=retry_failed, methods=["POST"]),
+    Route("/youtube-dl/remove", endpoint=remove_failed, methods=["POST"]),
     Route("/youtube-dl/update", endpoint=update_route, methods=["PUT"]),
 ]
 

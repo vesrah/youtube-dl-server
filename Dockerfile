@@ -34,6 +34,9 @@ RUN apk --update-cache add --virtual build-dependencies gcc libc-dev make \
 
 COPY . /usr/src/app
 
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=$GIT_COMMIT
+
 EXPOSE 8080
 
 VOLUME ["/youtube-dl", "/root/.config/yt-dlp"]
