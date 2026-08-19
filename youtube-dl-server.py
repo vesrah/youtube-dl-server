@@ -237,7 +237,7 @@ async def update_route(scope, receive, send):
 def update():
     try:
         output = subprocess.check_output(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp[default]"]
         )
 
         print(output.decode("utf-8"))
