@@ -189,10 +189,12 @@ def _download_dir():
 
 
 def _delete_partial_files(url):
-    """Delete leftover .part/.ytdl files for a video so a retry starts clean.
+    """Delete leftover .part/.ytdl files for a video.
 
-    Left in place, yt-dlp resumes mid-file, and the ranged request that
-    follows is refused with a 403, so the retry fails exactly as before.
+    Kept, they make a retry resume mid-file, and the ranged request that
+    follows is refused with a 403 -- so the retry fails exactly as before.
+    Dropping the job instead leaves them orphaned, with nothing on the
+    failed list still referring to them.
     """
     video_id = _video_id_from_url(url)
     if not video_id:
@@ -215,7 +217,7 @@ def _delete_partial_files(url):
         except OSError as e:
             print("Could not delete %s: %s" % (entry.name, e))
     if removed:
-        print("Deleted %d partial file(s) before retrying %s" % (len(removed), url))
+        print("Deleted %d partial file(s) for %s" % (len(removed), url))
     return removed
 
 
@@ -271,7 +273,7 @@ async def retry_failed(request):
 
 
 async def remove_failed(request):
-    """Drop failed job(s) from the list. Body: {"id": 123}, {"ids": [1,2,3]}, or {"all": true}."""
+    """Drop failed job(s) and their partial files. Body: {"id": 123}, {"ids": [1,2,3]}, or {"all": true}."""
     try:
         raw = await request.body()
         body = json.loads(raw) if raw else {}
@@ -279,7 +281,7 @@ async def remove_failed(request):
         body = {}
     with _jobs_lock:
         if body.get("all"):
-            removed = len(_failed_jobs)
+            dropped = list(_failed_jobs)
             _failed_jobs.clear()
         else:
             ids = set()
@@ -287,12 +289,17 @@ async def remove_failed(request):
                 ids.add(body["id"])
             if "ids" in body:
                 ids.update(body["ids"])
-            before = len(_failed_jobs)
+            dropped = [j for j in _failed_jobs if j["id"] in ids]
             _failed_jobs[:] = [j for j in _failed_jobs if j["id"] not in ids]
-            removed = before - len(_failed_jobs)
-    if removed:
+        # A URL already downloading owns its .part file; leave that one alone.
+        active_urls = {j["url"] for j in _jobs}
+    for job in dropped:
+        url = job.get("url") or ""
+        if url and url not in active_urls:
+            _delete_partial_files(url)
+    if dropped:
         _save_queue_state()
-    return JSONResponse({"success": True, "removed": removed})
+    return JSONResponse({"success": True, "removed": len(dropped)})
 
 
 def normalize_youtube_url(url):
